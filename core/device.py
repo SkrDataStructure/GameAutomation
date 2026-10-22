@@ -74,3 +74,6 @@ class DeviceManager:
     def press(self, key: str) -> None:
         with self._lock:
             self.connect().press(key)
+
+    def swipe(self, x: int, y: int, x1, y1) -> None:
+        self.connect().swipe(int(x), int(y), int(x1), int(y1))

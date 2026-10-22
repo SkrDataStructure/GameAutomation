@@ -26,6 +26,7 @@ def configure_logging() -> None:
 
 
 def build_tasks(game: str, actions: Actions):
+    # TODO 任务构建入口
     if game == "demo":
         return [StartGameTask(actions), ClaimRewardTask(actions)]
     raise ValueError(f"未知游戏 {game!r}；当前支持：demo")

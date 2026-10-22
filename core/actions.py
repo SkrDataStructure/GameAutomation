@@ -52,3 +52,45 @@ class Actions:
                 logger.info("找图超时：template=%s timeout=%.2fs", name, timeout)
                 return False
             time.sleep(self.poll_interval)
+
+    def click_until_image(
+            self,
+            name: str,
+            skip_xy: tuple[int, int] = (360, 580),  # 加速动画的点击坐标
+            timeout: float = 3.0,
+    ) -> bool:
+        """
+        在 timeout 秒内反复点屏幕加速过场动画，同时找图；
+        找到目标图后点击其中心坐标并返回 True，超时返回 False。
+        """
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            # 1) 截图找目标按钮
+            frame = self.screenshot()
+            result = self.find_image(name, image=frame)
+
+            if result.found:
+                # 2) 找到目标：点它的中心，返回成功
+                logger.info(
+                    "命中模板=%s score=%.3f center=(%d,%d)%s",
+                    name, result.score, result.x, result.y,
+                    " [DRY RUN: 未点击]" if self.dry_run else "",
+                )
+                if not self.dry_run:
+                    self.device.click(result.x, result.y)
+                return True
+
+            # 3) 没找到：点屏幕加速过场动画
+            if not self.dry_run:
+                self.device.click(*skip_xy)
+
+            # 4) 超时退出
+            if time.monotonic() >= deadline:
+                logger.info("找图超时：template=%s timeout=%.2fs", name, timeout)
+                return False
+
+            # 5) 控制节奏
+            time.sleep(self.poll_interval)
+
+    def swipe(self, x: int, y: int, x1: int, y1: int) -> None:
+        self.device.swipe(x, y, x1, y1)

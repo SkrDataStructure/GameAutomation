@@ -9,6 +9,7 @@ from typing import Mapping, Optional, Sequence
 import cv2
 import numpy as np
 
+from config.settings import DEFAULT_THRESHOLD
 from config.settings import PROJECT_ROOT
 from core.device import DeviceManager
 
@@ -19,8 +20,8 @@ logger = logging.getLogger(__name__)
 class TemplateSpec:
     name: str
     path: str
-    threshold: float = 0.88
-    region: Optional[tuple[int, int, int, int]] = None
+    threshold: float = DEFAULT_THRESHOLD
+    region: Optional[tuple[float, float, float, float]] = None
 
 
 @dataclass(frozen=True)
@@ -42,7 +43,7 @@ class TemplateMatcher:
             name: TemplateSpec(
                 name=name,
                 path=str(value["path"]),
-                threshold=float(value.get("threshold", 0.88)),
+                threshold=float(value.get("threshold", DEFAULT_THRESHOLD)),
                 region=tuple(value["region"]) if value.get("region") is not None else None,
             )
             for name, value in specs.items()
@@ -73,11 +74,32 @@ class TemplateMatcher:
 
     @staticmethod
     def _validate_region(region, image_shape):
+        """region 支持两种写法：
+        - 相对比例：四个值都在 [0, 1]，如 (0.1, 0.2, 0.3, 0.4)
+        - 绝对像素：如 (192, 216, 576, 432)
+        返回绝对像素坐标 (x1, y1, x2, y2)，并 clamp 到图像范围内。
+        """
         h, w = image_shape[:2]
         x1, y1, x2, y2 = region
-        if not (0 <= x1 < x2 <= w and 0 <= y1 < y2 <= h):
+
+        # 四个值都在 [0, 1] 视为相对比例
+        if all(0.0 <= v <= 1.0 for v in region):
+            x1, x2 = x1 * w, x2 * w
+            y1, y2 = y1 * h, y2 * h
+
+        x1, x2 = int(round(x1)), int(round(x2))
+        y1, y2 = int(round(y1)), int(round(y2))
+
+        # clamp 到图像范围内
+        x1 = max(0, min(x1, w))
+        x2 = max(0, min(x2, w))
+        y1 = max(0, min(y1, h))
+        y2 = max(0, min(y2, h))
+
+        if x1 >= x2 or y1 >= y2:
             raise ValueError(
-                f"ROI {region} 超出截图范围（宽={w}, 高={h}）；格式应为 (x1,y1,x2,y2)。"
+                f"ROI {region} 无效（宽={w}, 高={h}）；"
+                f"格式应为 (x1,y1,x2,y2)，或四个 [0,1] 内的比例值。"
             )
         return x1, y1, x2, y2
 
@@ -142,3 +164,118 @@ class TemplateMatcher:
             elif name in self.specs:
                 key = str(self._resolve_path(self.specs[name].path).resolve())
                 self._cache.pop(key, None)
+
+    def crop_by_ratio(image: np.ndarray, region: tuple[float, float, float, float]) -> np.ndarray:
+        """按归一化比例 (x1, y1, x2, y2) 裁剪，比例范围 0~1。
+            裁剪图片ROI
+        region=(0.0, 0.0, 1.0, 1.0) 表示整图。
+        """
+        h, w = image.shape[:2]
+        x1, y1, x2, y2 = region
+        px1, py1 = int(round(x1 * w)), int(round(y1 * h))
+        px2, py2 = int(round(x2 * w)), int(round(y2 * h))
+        # 防御：越界钳制 + 至少 1 像素
+        px1, px2 = max(0, min(px1, w - 1)), max(1, min(px2, w))
+        py1, py2 = max(0, min(py1, h - 1)), max(1, min(py2, h))
+        if px2 <= px1 or py2 <= py1:
+            raise ValueError(f"无效 region: {region} -> 像素 ({px1},{py1},{px2},{py2})")
+        return image[py1:py2, px1:px2]
+
+    def crop_by_pixels(image: np.ndarray, box: tuple[int, int, int, int]) -> np.ndarray:
+        """按像素 (x1, y1, x2, y2) 裁剪。"""
+        h, w = image.shape[:2]
+        x1, y1, x2, y2 = box
+        x1, x2 = max(0, x1), min(w, x2)
+        y1, y2 = max(0, y1), min(h, y2)
+        if x2 <= x1 or y2 <= y1:
+            raise ValueError(f"无效 box: {box}")
+        return image[y1:y2, x1:x2]
+
+    def find_all_in_image(
+            self,
+            image: np.ndarray,
+            name: str,
+            crop_region: tuple[float, float, float, float] | None = None,
+            threshold: float | None = None,
+            max_results: int = 20,
+            nms_iou: float = 0.3,
+    ) -> list[MatchResult]:
+        """在 image（可先按 crop_region 裁剪）中找出模板 name 的所有实例。
+
+        crop_region: 归一化比例 (x1,y1,x2,y2)；None 表示全图。
+        threshold: 覆盖 spec.threshold。
+        返回按 score 降序、互不重叠的 MatchResult 列表。
+        """
+        spec = self.specs.get(name)
+        if spec is None:
+            raise KeyError(f"未配置模板: {name}")
+        template = self._load_template(name)
+        if template is None:
+            return []
+
+        # 1. 裁剪
+        if crop_region is not None:
+            h, w = image.shape[:2]
+            x1, y1, x2, y2 = crop_region
+            px1, py1 = int(round(x1 * w)), int(round(y1 * h))
+            px2, py2 = int(round(x2 * w)), int(round(y2 * h))
+            search = image[py1:py2, px1:px2]
+            off_x, off_y = px1, py1
+        else:
+            search = image
+            off_x = off_y = 0
+
+        th, tw = template.shape[:2]
+        sh, sw = search.shape[:2]
+        if th > sh or tw > sw:
+            logger.debug("模板 %s 大于搜索区域 %dx%d < 模板 %dx%d",
+                         name, sw, sh, tw, th)
+            return []
+        if float(np.std(template)) < 1e-6:
+            logger.warning("模板 %s 方差过低，跳过", name)
+            return []
+
+        thr = spec.threshold if threshold is None else threshold
+        scores = cv2.matchTemplate(search, template, cv2.TM_CCOEFF_NORMED)
+
+        # 2. 所有候选点
+        ys, xs = np.where(scores >= thr)
+        if len(xs) == 0:
+            return []
+
+        # 3. 按分数降序 + NMS
+        order = np.argsort(scores[ys, xs])[::-1]
+        boxes: list[tuple[int, int, int, int]] = []
+        results: list[MatchResult] = []
+        for i in order:
+            x, y = int(xs[i]), int(ys[i])
+            box = (x, y, x + tw, y + th)
+            if any(self._iou(box, b) > nms_iou for b in boxes):
+                continue
+            boxes.append(box)
+            results.append(MatchResult(
+                found=True,
+                x=int(off_x + x + tw // 2),
+                y=int(off_y + y + th // 2),
+                score=float(scores[y, x]),
+                template=name,
+                box=(off_x + x, off_y + y, off_x + x + tw, off_y + y + th),
+            ))
+            if len(results) >= max_results:
+                break
+
+        return results
+
+    @staticmethod
+    def _iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
+        ax1, ay1, ax2, ay2 = a
+        bx1, by1, bx2, by2 = b
+        ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+        ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+        iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
+        inter = iw * ih
+        if inter == 0:
+            return 0.0
+        area_a = (ax2 - ax1) * (ay2 - ay1)
+        area_b = (bx2 - bx1) * (by2 - by1)
+        return inter / (area_a + area_b - inter)
