@@ -113,6 +113,11 @@ PORTAL_TEMPLATES = {
         "path": Path(PORTAL_TEMPLATES_PATH) / "back.png",
         "threshold": DEFAULT_THRESHOLD,
         "region": None
+    },
+    "ack": {
+        "path": Path(PORTAL_TEMPLATES_PATH) / "ack.png",
+        "threshold": DEFAULT_THRESHOLD,
+        "region": None
     }
 }
 

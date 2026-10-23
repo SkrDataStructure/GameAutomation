@@ -8,7 +8,7 @@ from core.matcher import TemplateMatcher, logger
 from core.actions import Actions
 
 FILE_PATH = Path(__file__).parent
-FILE_NAME = "ten_level"
+FILE_NAME = "ack"
 
 @pytest.fixture
 def templateSpec():
@@ -16,7 +16,7 @@ def templateSpec():
     FILE_NAME: {
         "path": FILE_PATH / f"templates/{FILE_NAME}.png"  ,
         "threshold": 0.88,
-        "region": (0.3097, 0.8500, 0.6861, 0.8859),
+        "region": None,
     }
 }
 

@@ -203,12 +203,14 @@ class Portal(Task):
             # 轮询主页
             while not self.actions.find_image("email", self.actions.screenshot()).found:
                 self.actions.click_until_image(
-                    name="end_next", skip_xy=(150, 240), timeout=2
+                    name="end_next", skip_xy=(150, 240), timeout=1
                 )
-                self.actions.click_until_image(
-                    name="lobby", skip_xy=(150, 240), timeout=2
-                )
+                # 其他活动
+                self.actions.click_until_image("ack", (150, 240), 1)
 
+            self.actions.click_until_image(
+                name="lobby", skip_xy=(150, 240), timeout=2
+            )
             wait_click(wait_time)
             return True
         return False
