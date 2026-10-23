@@ -6,6 +6,7 @@ from typing import Optional
 
 import numpy as np
 
+import config
 from core.device import DeviceManager
 from core.matcher import MatchResult, TemplateMatcher
 
@@ -32,6 +33,10 @@ class Actions:
 
     def find_image(self, name: str, image: Optional[np.ndarray] = None) -> MatchResult:
         return self.matcher.find(name, image=image)
+
+    def wait_find_image(self, name: str, timeout: float, interval:float=0.3) -> MatchResult:
+        """在超时时间内反复截图找图；命中后返回 True，否则 False。 interval 为每次找图的间隔时间"""
+        return self.matcher.wait_find(name=name , timeout=timeout,  interval=interval)
 
     def click_image(self, name: str, timeout: float = 5.0) -> bool:
         """在超时时间内反复截图找图；命中后点击并返回 True，否则 False。"""

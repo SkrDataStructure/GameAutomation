@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import logging
 import threading
 from dataclasses import dataclass
@@ -155,6 +156,47 @@ class TemplateMatcher:
         """对多个模板复用同一张截图；每个模板仍使用自己的阈值与 ROI。"""
         frame = image if image is not None else self.device.screenshot()
         return {name: self.find_in_image(frame, name) for name in names}
+
+    def wait_find(
+            self,
+            name: str,
+            timeout: float,
+            interval: float = 0.3,
+    ) -> MatchResult:
+        """在 timeout 秒内反复截图并查找模板 name，直到找到或超时。
+
+        适用于页面加载 / 交互动画等导致目标延迟出现的场景。
+
+        Args:
+            name:     模板名，未配置会立即抛 KeyError（不进入等待）。
+            timeout:  最长等待秒数，<=0 时只尝试一次。
+            interval: 两次尝试之间的间隔秒数。
+
+        Returns:
+            找到时返回 found=True 的 MatchResult；
+            超时返回最后一次的失败结果（score 为最后一次得分，便于排查）。
+        """
+        if interval < 0:
+            raise ValueError("interval 不能为负数")
+
+        # 先校验模板配置，配置错误应立即失败而非空等
+        if self.specs.get(name) is None:
+            raise KeyError(f"未配置模板: {name}")
+
+        deadline = time.monotonic() + max(0.0, timeout)
+        last_result = MatchResult(False, template=name)
+
+        while True:
+            image = self.device.screenshot()  # 每次都用新帧
+            result = self.find_in_image(image, name)
+            if result.found:
+                return result
+            last_result = result
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return last_result
+            time.sleep(min(interval, remaining))
 
     def clear_cache(self, name: Optional[str] = None) -> None:
         """模板文件更新后可显式清缓存；不传 name 清除全部。"""
